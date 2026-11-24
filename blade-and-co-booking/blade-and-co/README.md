@@ -49,3 +49,11 @@ Reminders are skipped for bookings made less than an hour ahead, and nothing is 
 IMPORTANT: the server must be awake at the time of the reminder. Render's free plan puts the service to sleep when idle, so reminders will be missed. Use a paid (always-on) plan.
 
 To test without sending real texts, set SMS_DRY_RUN=1: the text is printed in the logs instead.
+
+## Blocking days and hours (barber dashboard)
+Log in with "Barber login", then open the "Block time" tab.
+- Pick a date, then tap "Block whole day", or tap the hours to close (white = blocked) and press "Save hours".
+- Blocked days are greyed out in the clients' calendar, and blocked hours can't be chosen.
+- Existing bookings inside a blocked time are NOT cancelled. The dashboard tells you how many there are, and you cancel them in the Reservations tab.
+- Press x next to a blocked entry to open that time again.
+Blocks are saved in blocks.json next to bookings.json (same DATA_DIR).

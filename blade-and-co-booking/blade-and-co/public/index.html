@@ -105,6 +105,10 @@ input.bad{border-color:var(--red);animation:shake .35s}
 .ar>b{font-family:'Big Shoulders Display',Impact,sans-serif;font-size:1.6rem;min-width:56px}
 .ar>div{flex:1;min-width:0;word-break:break-word}
 .ar a{color:var(--text)}
+.tabs{display:flex;gap:8px;margin-bottom:20px}
+.tab{flex:1;padding:12px;border-radius:12px;border:1px solid var(--line);background:none;color:var(--mute);font:inherit;cursor:pointer;transition:all .2s}
+.tab.on{background:var(--text);color:#000;font-weight:700}
+input[type=date]{color-scheme:dark}
 </style>
 </head>
 <body>
@@ -182,9 +186,17 @@ input.bad{border-color:var(--red);animation:shake .35s}
       <div class="row"><button class="btn" id="ago">Sign in</button></div>
     </div>
     <div id="adash" hidden>
-      <h2>Reservations</h2>
-      <p class="sub" id="acount"></p>
-      <div id="alist"></div>
+      <div class="tabs"><button class="tab on" data-tab="res">Reservations</button><button class="tab" data-tab="blk">Block time</button></div>
+      <div id="tres"><p class="sub" id="acount"></p><div id="alist"></div></div>
+      <div id="tblk" hidden>
+        <p class="sub">Pick a day, then block the whole day, or tap the hours to close (white = blocked) and save.</p>
+        <label for="bd">Date</label><input id="bd" type="date">
+        <div id="bslots" class="times" style="margin-top:14px"></div>
+        <div class="err" id="bmsg"></div>
+        <div class="row"><button class="btn ghost" id="ball">Block whole day</button><button class="btn" id="bsave">Save hours</button></div>
+        <div class="ad" style="margin-top:28px">Blocked</div>
+        <div id="blist"></div>
+      </div>
       <div class="row"><button class="btn ghost" id="aout">Log out</button></div>
     </div>
   </div>
@@ -195,6 +207,7 @@ const $=id=>document.getElementById(id);
 const pad=n=>String(n).padStart(2,'0');
 const key=d=>d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
 const today=new Date();today.setHours(0,0,0,0);
+const CLOSED=new Set();
 let view=new Date(today.getFullYear(),today.getMonth(),1),date=null,time=null,step=1;
 
 function taken(){try{return JSON.parse(localStorage.getItem('bc-booked')||'[]')}catch(e){return[]}}
@@ -218,7 +231,7 @@ function drawCal(){
   let h=['Mo','Tu','We','Th','Fr','Sa','Su'].map(d=>'<div class="dow">'+d+'</div>').join('');
   for(let i=0;i<first;i++)h+='<div></div>';
   for(let d=1;d<=days;d++){
-    const dt=new Date(y,m,d),off=dt<today||dt.getDay()===0;
+    const dt=new Date(y,m,d),off=dt<today||dt.getDay()===0||CLOSED.has(key(dt));
     const cls=['day',+dt===+today?'today':'',date&&+dt===+date?'sel':''].join(' ');
     h+='<button class="'+cls+'" data-d="'+key(dt)+'"'+(off?' disabled':'')+'>'+d+'</button>';
   }
@@ -321,6 +334,7 @@ function showDash(){
 // Server mode: bookings and the barber login go through the server.
 const api=async(p,o={})=>{const r=await fetch(p,{credentials:'same-origin',headers:{'Content-Type':'application/json'},...o});let d=null;try{d=await r.json()}catch(e){}return{ok:r.ok,status:r.status,d}};
 let SLOTS={},mine=null;
+api('/api/closed').then(r=>{if(r.ok){r.d.dates.forEach(d=>CLOSED.add(d));drawCal()}});
 function lock(b){
   mine=b;const [y,m,d]=b.date.split('-').map(Number);
   $('minetxt').textContent=fmtDate(new Date(y,m-1,d))+' at '+b.time.padStart(5,'0')+' · '+b.fn+' '+b.ln;
@@ -365,6 +379,50 @@ $('book').onclick=async()=>{
   mine={fn,ln,date:key(date),time};try{localStorage.setItem('bc-token',r.d.token)}catch(e){}
   go(4);
 };
+
+// Barber: block days or hours
+let BLKS=[],selB=new Set();
+$('bd').min=key(today);
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));
+  $('tres').hidden=b.dataset.tab!=='res';$('tblk').hidden=b.dataset.tab!=='blk';
+  if(b.dataset.tab==='blk')loadBlocks();
+});
+async function loadBlocks(){const r=await api('/api/blocks');if(!r.ok)return;BLKS=r.d.blocks;drawBlocks();pickDate()}
+function pickDate(){
+  selB=new Set();const b=BLKS.find(x=>x.date===$('bd').value);
+  if(b)(b.all?OPEN:b.times).forEach(t=>selB.add(t));
+  drawBSlots();
+}
+function drawBSlots(){
+  $('bslots').textContent='';if(!$('bd').value)return;
+  OPEN.forEach(t=>{const e=document.createElement('button');e.className='time'+(selB.has(t)?' sel':'');e.textContent=t.padStart(5,'0');
+    e.onclick=()=>{selB.has(t)?selB.delete(t):selB.add(t);drawBSlots()};$('bslots').append(e)});
+}
+$('bd').onchange=()=>{$('bmsg').textContent='';pickDate()};
+async function saveBlock(all){
+  const d=$('bd').value;if(!d){$('bmsg').textContent='Choose a date first.';return}
+  const times=all?[...OPEN]:[...selB];
+  const r=await api('/api/blocks',{method:'PUT',body:JSON.stringify({date:d,all,times})});
+  if(!r.ok){$('bmsg').textContent=(r.d&&r.d.error)||'Could not save.';return}
+  $('bmsg').textContent=r.d.conflicts?r.d.conflicts+' existing booking'+(r.d.conflicts>1?'s':'')+' in this time stay booked. Cancel them in Reservations if needed.':'Saved.';
+  loadBlocks();
+}
+$('ball').onclick=()=>saveBlock(true);
+$('bsave').onclick=()=>saveBlock(false);
+function drawBlocks(){
+  const box=$('blist');box.textContent='';
+  if(!BLKS.length){const p=document.createElement('p');p.className='sub';p.textContent='Nothing blocked.';box.append(p);return}
+  BLKS.forEach(b=>{
+    const r=document.createElement('div');r.className='ar';const [y,m,d]=b.date.split('-').map(Number);
+    const w=document.createElement('div'),n=document.createElement('div'),s=document.createElement('div');
+    n.textContent=fmtDate(new Date(y,m-1,d));s.className='sub';s.style.margin='0';
+    s.textContent=b.all?'Whole day':b.times.map(x=>x.padStart(5,'0')).join(', ');w.append(n,s);
+    const x=document.createElement('button');x.className='nav';x.textContent='\u00d7';x.setAttribute('aria-label','Remove block');
+    x.onclick=async()=>{await api('/api/blocks',{method:'PUT',body:JSON.stringify({date:b.date,all:false,times:[]})});loadBlocks()};
+    r.append(w,x);box.append(r);
+  });
+}
 
 function aMode(){$('atitle').textContent='Barber login';$('asub').textContent='Sign in to see your reservations.';$('ago').textContent='Sign in'}
 async function reload(){const r=await api('/api/bookings');if(r.ok)showDash(r.d.bookings);else{$('adash').hidden=true;$('alogin').hidden=false}}

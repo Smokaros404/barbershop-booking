@@ -24,6 +24,11 @@ fs.mkdirSync(DIR, { recursive: true });
 const FILE = path.join(DIR, 'bookings.json');
 let DB = [];
 try { DB = JSON.parse(fs.readFileSync(FILE, 'utf8')); } catch (e) {}
+// Blocked time set by the barber: { date, all: true } or { date, times: [...] }
+const BFILE = path.join(DIR, 'blocks.json');
+let BLK = [];
+try { BLK = JSON.parse(fs.readFileSync(BFILE, 'utf8')); } catch (e) {}
+const saveBlk = () => { fs.writeFileSync(BFILE + '.tmp', JSON.stringify(BLK)); fs.renameSync(BFILE + '.tmp', BFILE); };
 const save = () => { fs.writeFileSync(FILE + '.tmp', JSON.stringify(DB)); fs.renameSync(FILE + '.tmp', FILE); };
 
 const OPEN = [];
@@ -33,7 +38,11 @@ const sha = s => crypto.createHash('sha256').update(s).digest();
 const same = (a, b) => crypto.timingSafeEqual(sha(a), sha(b));
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: TZ });
 const nowMin = () => { const [h, m] = new Date().toLocaleTimeString('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit' }).split(':'); return +h * 60 + +m; };
-const takenOn = d => DB.filter(b => b.date === d).map(b => b.time);
+// Times that cannot be booked on a date: existing bookings plus anything the barber blocked.
+const takenOn = d => {
+  const t = DB.filter(b => b.date === d).map(b => b.time), k = BLK.find(x => x.date === d);
+  return k ? [...new Set([...t, ...(k.all ? OPEN : k.times)])] : t;
+};
 // A client is identified by mobile number (last 10 digits, so +30 and local formats match).
 const key10 = s => String(s).replace(/\D/g, '').slice(-10);
 const upcoming = b => { const [h, m] = b.time.split(':').map(Number); return b.date > today() || (b.date === today() && h * 60 + m > nowMin()); };
@@ -110,6 +119,32 @@ async function api(req, res, url) {
     DB.push(bk);
     save();
     return send(res, 201, { ok: true, token });
+  }
+
+  if (route === 'GET /api/closed') {
+    const t = today();
+    return send(res, 200, { dates: BLK.filter(b => b.all && b.date >= t).map(b => b.date) });
+  }
+
+  if (route === 'GET /api/blocks') {
+    if (!authed(req)) return send(res, 401, { error: 'Sign in required.' });
+    const t = today();
+    return send(res, 200, { blocks: BLK.filter(b => b.date >= t).sort((a, b) => a.date.localeCompare(b.date)) });
+  }
+
+  if (route === 'PUT /api/blocks') {
+    if (!authed(req)) return send(res, 401, { error: 'Sign in required.' });
+    const b = await readBody(req);
+    const date = String(b.date || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(new Date(date + 'T12:00:00Z'))) return send(res, 400, { error: 'Invalid date.' });
+    if (date < today()) return send(res, 400, { error: 'That date has passed.' });
+    const times = Array.isArray(b.times) ? [...new Set(b.times.map(String).filter(t => OPEN.includes(t)))] : [];
+    const all = b.all === true || times.length === OPEN.length;
+    BLK = BLK.filter(x => x.date !== date && x.date >= today());
+    if (all || times.length) BLK.push(all ? { date, all: true } : { date, times: OPEN.filter(t => times.includes(t)) });
+    saveBlk();
+    const closed = all ? OPEN : times;
+    return send(res, 200, { ok: true, conflicts: DB.filter(x => x.date === date && closed.includes(x.time)).length });
   }
 
   if (route === 'POST /api/login') {
