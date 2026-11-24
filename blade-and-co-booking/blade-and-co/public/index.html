@@ -123,10 +123,12 @@ input.bad{border-color:var(--red);animation:shake .35s}
 
   <section class="work"><h2>Our work</h2><div class="reel" id="reel"></div></section>
 
+  <div class="card" id="mine" hidden><h2>You’re booked</h2><p class="sub" id="minetxt"></p><p class="sub" style="margin:0">You can book again once this cut is done, or if the barbershop cancels it.</p></div>
+
   <div class="track"><div class="pole" id="bar"></div></div>
   <div class="steps" id="steps"><span class="on">Date</span><span>Time</span><span>Your details</span></div>
 
-  <div class="card">
+  <div class="card" id="bookcard">
     <section class="view show" id="v1">
       <h2>Choose a date</h2>
       <div class="cal-head">
@@ -150,8 +152,7 @@ input.bad{border-color:var(--red);animation:shake .35s}
       <p class="sub" id="whenLabel"></p>
       <label for="fn">Name</label><input id="fn" autocomplete="given-name">
       <label for="ln">Surname</label><input id="ln" autocomplete="family-name">
-      <label for="ph">Mobile number</label><input id="ph" type="tel" inputmode="tel" autocomplete="tel" placeholder="+30 690 000 0000">
-      <label for="em">Email (optional)</label><input id="em" type="email" autocomplete="email">
+      <label for="ph">Mobile number (we text you a reminder 1 hour before)</label><input id="ph" type="tel" inputmode="tel" autocomplete="tel" placeholder="+30 690 000 0000">
       <div class="err" id="err" role="alert"></div>
       <div class="row"><button class="btn ghost" data-back="2">Back</button><button class="btn" id="book">Book my cut</button></div>
     </section>
@@ -163,7 +164,7 @@ input.bad{border-color:var(--red);animation:shake .35s}
         <p class="sub" id="thanks"></p>
       </div>
       <div class="sum" id="sum"></div>
-      <div class="row"><button class="btn" id="again">Book another cut</button></div>
+      <div class="row"><button class="btn" id="again">Close</button></div>
     </section>
   </div>
 </div>
@@ -243,22 +244,20 @@ $('to3').onclick=()=>{$('whenLabel').textContent=fmtDate(date)+' at '+time.padSt
 document.querySelectorAll('[data-back]').forEach(b=>b.onclick=()=>go(+b.dataset.back));
 
 function bad(el,msg){el.classList.add('bad');$('err').textContent=msg;el.focus()}
-['fn','ln','ph','em'].forEach(id=>$(id).addEventListener('input',()=>{$(id).classList.remove('bad');$('err').textContent=''}));
+['fn','ln','ph'].forEach(id=>$(id).addEventListener('input',()=>{$(id).classList.remove('bad');$('err').textContent=''}));
 $('book').onclick=()=>{
-  const fn=$('fn').value.trim(),ln=$('ln').value.trim(),ph=$('ph').value.trim(),em=$('em').value.trim();
+  const fn=$('fn').value.trim(),ln=$('ln').value.trim(),ph=$('ph').value.trim();
   if(!fn)return bad($('fn'),'Enter your name.');
   if(!ln)return bad($('ln'),'Enter your surname.');
   if(ph.replace(/\D/g,'').length<8||!/^[+\d][\d\s()-]+$/.test(ph))return bad($('ph'),'Enter a valid mobile number, for example +30 690 000 0000.');
-  if(em&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em))return bad($('em'),'Enter a valid email address or leave it empty.');
-  saveTaken(key(date)+time,{fn,ln,ph,em,d:key(date),t:time,at:Date.now()});
+  saveTaken(key(date)+time,{fn,ln,ph,d:key(date),t:time,at:Date.now()});
   $('thanks').textContent='See you soon, '+fn+'.';
   const rows=[['Date',fmtDate(date)],['Time',time.padStart(5,'0')],['Name',fn+' '+ln],['Mobile',ph]];
-  if(em)rows.push(['Email',em]);
   $('sum').innerHTML=rows.map(r=>'<div><span>'+r[0]+'</span><b></b></div>').join('');
   [...$('sum').querySelectorAll('b')].forEach((b,i)=>b.textContent=rows[i][1]);
   go(4);
 };
-$('again').onclick=()=>{date=null;time=null;['fn','ln','ph','em'].forEach(i=>$(i).value='');$('to2').disabled=true;drawCal();go(1)};
+$('again').onclick=()=>{date=null;time=null;['fn','ln','ph'].forEach(i=>$(i).value='');$('to2').disabled=true;drawCal();go(1)};
 drawCal();
 
 // Work photos: set src to an image URL or data: URI to replace a placeholder.
@@ -276,7 +275,7 @@ let seen=false;try{seen=sessionStorage.getItem('bc-intro')==='1'}catch(e){}
 if(seen||matchMedia('(prefers-reduced-motion:reduce)').matches){intro.remove()}else{
   document.body.style.overflow='hidden';
   const T=[];let over=false;
-  const end=()=>{if(over)return;over=true;T.forEach(clearTimeout);intro.classList.add('out');document.body.style.overflow='';window.scrollTo({top:$('bar').getBoundingClientRect().top+window.scrollY-16,behavior:'smooth'});try{sessionStorage.setItem('bc-intro','1')}catch(e){}setTimeout(()=>intro.remove(),1100)};
+  const end=()=>{if(over)return;over=true;T.forEach(clearTimeout);intro.classList.add('out');document.body.style.overflow='';window.scrollTo({top:($('mine').hidden?$('bar'):$('mine')).getBoundingClientRect().top+window.scrollY-16,behavior:'smooth'});try{sessionStorage.setItem('bc-intro','1')}catch(e){}setTimeout(()=>intro.remove(),1100)};
   T.push(setTimeout(end,2000));
   $('skip').onclick=end;
 }
@@ -312,7 +311,6 @@ function showDash(){
     const t=document.createElement('b');t.textContent=b.t.padStart(5,'0');
     const w=document.createElement('div'),n=document.createElement('div'),a=document.createElement('a');
     n.textContent=b.fn+' '+b.ln;a.href='tel:'+b.ph.replace(/[^\d+]/g,'');a.textContent=b.ph;w.append(n,a);
-    if(b.em){const m=document.createElement('div');m.className='sub';m.style.margin='0';m.textContent=b.em;w.append(m)}
     const x=document.createElement('button');x.className='nav';x.textContent='×';x.setAttribute('aria-label','Cancel booking');
     x.onclick=()=>{sv('bc-bookings',(ld('bc-bookings')||[]).filter(z=>z.at!==b.at));sv('bc-booked',taken().filter(k=>k!==b.d+b.t));showDash()};
     r.append(t,w,x);box.append(r);
@@ -322,7 +320,27 @@ function showDash(){
 <script>
 // Server mode: bookings and the barber login go through the server.
 const api=async(p,o={})=>{const r=await fetch(p,{credentials:'same-origin',headers:{'Content-Type':'application/json'},...o});let d=null;try{d=await r.json()}catch(e){}return{ok:r.ok,status:r.status,d}};
-let SLOTS={};
+let SLOTS={},mine=null;
+function lock(b){
+  mine=b;const [y,m,d]=b.date.split('-').map(Number);
+  $('minetxt').textContent=fmtDate(new Date(y,m-1,d))+' at '+b.time.padStart(5,'0')+' · '+b.fn+' '+b.ln;
+  document.querySelector('.track').hidden=true;$('steps').hidden=true;$('bookcard').hidden=true;$('mine').hidden=false;
+}
+function unlock(){
+  mine=null;$('mine').hidden=true;document.querySelector('.track').hidden=false;$('steps').hidden=false;$('bookcard').hidden=false;
+  date=null;time=null;['fn','ln','ph'].forEach(i=>$(i).value='');$('to2').disabled=true;drawCal();go(1);
+}
+$('again').onclick=()=>{if(mine)lock(mine)};
+async function checkMine(){
+  let t=null;try{t=localStorage.getItem('bc-token')}catch(e){}
+  if(!t)return;
+  const r=await api('/api/mine?token='+encodeURIComponent(t));
+  if(!r.ok)return;
+  if(r.d.active){if(step!==4)lock(r.d.booking)}
+  else{try{localStorage.removeItem('bc-token')}catch(e){}if(mine&&!$('mine').hidden)unlock();else mine=null}
+}
+checkMine();
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)checkMine()});
 function busy(d,t){return (SLOTS[key(d)]||[]).includes(t)}
 $('to2').onclick=async()=>{
   $('to2').disabled=true;
@@ -331,21 +349,20 @@ $('to2').onclick=async()=>{
   SLOTS[key(date)]=r.ok?r.d.taken:[];drawTimes();go(2);
 };
 $('book').onclick=async()=>{
-  const fn=$('fn').value.trim(),ln=$('ln').value.trim(),ph=$('ph').value.trim(),em=$('em').value.trim();
+  const fn=$('fn').value.trim(),ln=$('ln').value.trim(),ph=$('ph').value.trim();
   if(!fn)return bad($('fn'),'Enter your name.');
   if(!ln)return bad($('ln'),'Enter your surname.');
   if(ph.replace(/\D/g,'').length<8||!/^[+\d][\d\s()-]+$/.test(ph))return bad($('ph'),'Enter a valid mobile number, for example +30 690 000 0000.');
-  if(em&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em))return bad($('em'),'Enter a valid email address or leave it empty.');
   $('book').disabled=true;
-  const r=await api('/api/bookings',{method:'POST',body:JSON.stringify({fn,ln,ph,em,date:key(date),time})});
+  const r=await api('/api/bookings',{method:'POST',body:JSON.stringify({fn,ln,ph,date:key(date),time})});
   $('book').disabled=false;
   if(r.status===409){SLOTS[key(date)]=r.d.taken||[];time=null;drawTimes();$('dateLabel').textContent='That time was just taken. Choose another one.';go(2);return}
   if(!r.ok){$('err').textContent=(r.d&&r.d.error)||'Could not book. Check your connection and try again.';return}
   $('thanks').textContent='See you soon, '+fn+'.';
   const rows=[['Date',fmtDate(date)],['Time',time.padStart(5,'0')],['Name',fn+' '+ln],['Mobile',ph]];
-  if(em)rows.push(['Email',em]);
   $('sum').innerHTML=rows.map(r=>'<div><span>'+r[0]+'</span><b></b></div>').join('');
   [...$('sum').querySelectorAll('b')].forEach((b,i)=>b.textContent=rows[i][1]);
+  mine={fn,ln,date:key(date),time};try{localStorage.setItem('bc-token',r.d.token)}catch(e){}
   go(4);
 };
 
@@ -368,7 +385,6 @@ function showDash(L){
     const t=document.createElement('b');t.textContent=b.time.padStart(5,'0');
     const w=document.createElement('div'),n=document.createElement('div'),a=document.createElement('a');
     n.textContent=b.fn+' '+b.ln;a.href='tel:'+b.ph.replace(/[^\d+]/g,'');a.textContent=b.ph;w.append(n,a);
-    if(b.em){const m=document.createElement('div');m.className='sub';m.style.margin='0';m.textContent=b.em;w.append(m)}
     const x=document.createElement('button');x.className='nav';x.textContent='\u00d7';x.setAttribute('aria-label','Cancel booking');
     x.onclick=async()=>{if(confirm('Cancel '+b.fn+' '+b.ln+' at '+b.time.padStart(5,'0')+'?')){await api('/api/bookings/'+b.id,{method:'DELETE'});reload()}};
     r.append(t,w,x);box.append(r);

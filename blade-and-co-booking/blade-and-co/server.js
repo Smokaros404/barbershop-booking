@@ -9,6 +9,12 @@ const EMAIL = (process.env.BARBER_EMAIL || '').trim().toLowerCase();
 const PASS = process.env.BARBER_PASSWORD || '';
 const PROD = process.env.NODE_ENV === 'production';
 const PROXY = process.env.TRUST_PROXY === '1';
+// SMS reminders (Twilio). Leave the TWILIO_* variables empty to switch reminders off.
+const SID = process.env.TWILIO_ACCOUNT_SID || '', TOKEN = process.env.TWILIO_AUTH_TOKEN || '', FROM = process.env.TWILIO_FROM || '';
+const DRY = process.env.SMS_DRY_RUN === '1';
+const CC = (process.env.DEFAULT_COUNTRY_CODE || '30').replace(/\D/g, '');
+const SHOP = process.env.SHOP_NAME || 'Blade & Co.';
+const SMS_ON = DRY || !!(SID && TOKEN && FROM);
 if (!EMAIL || PASS.length < 10) {
   console.error('Set BARBER_EMAIL and BARBER_PASSWORD (at least 10 characters) before starting.');
   process.exit(1);
@@ -28,6 +34,9 @@ const same = (a, b) => crypto.timingSafeEqual(sha(a), sha(b));
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: TZ });
 const nowMin = () => { const [h, m] = new Date().toLocaleTimeString('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit' }).split(':'); return +h * 60 + +m; };
 const takenOn = d => DB.filter(b => b.date === d).map(b => b.time);
+// A client is identified by mobile number (last 10 digits, so +30 and local formats match).
+const key10 = s => String(s).replace(/\D/g, '').slice(-10);
+const upcoming = b => { const [h, m] = b.time.split(':').map(Number); return b.date > today() || (b.date === today() && h * 60 + m > nowMin()); };
 
 // Sessions and rate limits live in memory.
 const SESS = new Map(), HITS = new Map();
@@ -73,23 +82,34 @@ async function api(req, res, url) {
     return bad ? send(res, 400, { error: bad }) : send(res, 200, { taken: takenOn(d) });
   }
 
+  if (route === 'GET /api/mine') {
+    if (tooMany('mine' + ip(req), 120, 3600e3)) return send(res, 429, { error: 'Too many requests.' });
+    const t = url.searchParams.get('token') || '';
+    const b = t.length === 32 ? DB.find(x => x.token === t && upcoming(x)) : null;
+    return send(res, 200, b ? { active: true, booking: { fn: b.fn, ln: b.ln, date: b.date, time: b.time } } : { active: false });
+  }
+
   if (route === 'POST /api/bookings') {
     if (tooMany('book' + ip(req), 20, 3600e3)) return send(res, 429, { error: 'Too many bookings. Try again later.' });
     const b = await readBody(req);
-    const fn = String(b.fn || '').trim(), ln = String(b.ln || '').trim(), ph = String(b.ph || '').trim(), em = String(b.em || '').trim();
+    const fn = String(b.fn || '').trim(), ln = String(b.ln || '').trim(), ph = String(b.ph || '').trim();
     const date = String(b.date || ''), time = String(b.time || '');
     if (!fn || fn.length > 60 || !ln || ln.length > 60) return send(res, 400, { error: 'Enter your name and surname.' });
     if (!/^[+\d][\d\s()-]{7,24}$/.test(ph) || ph.replace(/\D/g, '').length < 8) return send(res, 400, { error: 'Enter a valid mobile number.' });
-    if (em && (em.length > 120 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em))) return send(res, 400, { error: 'Enter a valid email or leave it empty.' });
     const bad = validDate(date);
     if (bad) return send(res, 400, { error: bad });
     if (!OPEN.includes(time)) return send(res, 400, { error: 'Invalid time.' });
     const [h, m] = time.split(':').map(Number);
     if (date === today() && h * 60 + m <= nowMin()) return send(res, 400, { error: 'That time has passed.' });
+    if (DB.some(x => upcoming(x) && key10(x.ph) === key10(ph)))
+      return send(res, 403, { error: 'This number already has an upcoming booking. You can book again once it is done, or if the barbershop cancels it.', code: 'already_booked' });
     if (takenOn(date).includes(time)) return send(res, 409, { error: 'That time was just taken.', taken: takenOn(date) });
-    DB.push({ id: crypto.randomUUID(), fn, ln, ph, em, date, time, at: Date.now() });
+    const token = crypto.randomBytes(16).toString('hex');
+    const bk = { id: crypto.randomUUID(), token, fn, ln, ph, date, time, at: Date.now() };
+    if (minsUntil(bk) <= 60) bk.reminded = 'skipped'; // booked less than an hour ahead: no reminder
+    DB.push(bk);
     save();
-    return send(res, 201, { ok: true });
+    return send(res, 201, { ok: true, token });
   }
 
   if (route === 'POST /api/login') {
@@ -112,7 +132,7 @@ async function api(req, res, url) {
     if (!authed(req)) return send(res, 401, { error: 'Sign in required.' });
     const t = today();
     const list = DB.filter(b => b.date >= t).sort((a, b) => (a.date + a.time.padStart(5, '0')).localeCompare(b.date + b.time.padStart(5, '0')));
-    return send(res, 200, { bookings: list });
+    return send(res, 200, { bookings: list.map(({ token, ...b }) => b) });
   }
 
   const del = url.pathname.match(/^\/api\/bookings\/([\w-]+)$/);
@@ -124,6 +144,49 @@ async function api(req, res, url) {
   }
 
   send(res, 404, { error: 'Not found.' });
+}
+
+// ---- SMS reminders: sent once, about 1 hour before the appointment ----
+function e164(raw) {
+  const d = String(raw).replace(/\D/g, '');
+  if (/^\s*\+/.test(raw)) return '+' + d;
+  if (d.startsWith('00')) return '+' + d.slice(2);
+  return '+' + CC + d.replace(/^0+/, '');
+}
+async function sendSms(to, text) {
+  if (DRY) { console.log('[SMS dry run] to', to, ':', text); return; }
+  const p = new URLSearchParams({ To: to, Body: text });
+  p.set(/^MG/.test(FROM) ? 'MessagingServiceSid' : 'From', FROM);
+  const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${SID}/Messages.json`, {
+    method: 'POST',
+    headers: { Authorization: 'Basic ' + Buffer.from(SID + ':' + TOKEN).toString('base64'), 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: p,
+  });
+  if (!r.ok) throw new Error('Twilio ' + r.status + ' ' + (await r.text()).slice(0, 200));
+}
+function minsUntil(b) {
+  const [h, m] = b.time.split(':').map(Number);
+  const days = Math.round((Date.parse(b.date + 'T00:00:00Z') - Date.parse(today() + 'T00:00:00Z')) / 864e5);
+  return days * 1440 + h * 60 + m - nowMin();
+}
+let reminding = false;
+async function remind() {
+  if (reminding || !SMS_ON) return;
+  reminding = true;
+  try {
+    for (const b of DB) {
+      if (b.reminded) continue;
+      const u = minsUntil(b);
+      if (u <= 0) { b.reminded = 'skipped'; save(); continue; }   // appointment already started
+      if (u > 60) continue;
+      if ((b.tries || 0) >= 3) { b.reminded = 'failed'; save(); continue; }
+      try {
+        await sendSms(e164(b.ph), `${SHOP}: reminder, your cut is today at ${b.time.padStart(5, '0')}. See you soon!`);
+        b.reminded = 'sent';
+      } catch (e) { b.tries = (b.tries || 0) + 1; console.error('SMS failed:', e.message); }
+      save();
+    }
+  } finally { reminding = false; }
 }
 
 const SEC = {
@@ -145,4 +208,8 @@ http.createServer(async (req, res) => {
   } catch (e) {
     if (!res.headersSent) send(res, 400, { error: 'Bad request.' }); else res.end();
   }
-}).listen(PORT, () => console.log('Blade & Co. running on port ' + PORT));
+}).listen(PORT, () => {
+  console.log('Blade & Co. running on port ' + PORT);
+  console.log(SMS_ON ? 'SMS reminders are ON' : 'SMS reminders are OFF (set the TWILIO_* variables to turn them on)');
+  if (SMS_ON) { setInterval(remind, 60000); setTimeout(remind, 5000); }
+});
